@@ -1,0 +1,41 @@
+#! /usr/bin/env python
+
+dpdk_ver = "DPDK-1.6.0" #should match the name of the DPDK directory
+
+#not used currently
+ovs_executables = [
+    "vswitchd/ovs-vswitchd",
+    "utilities/ovs-ofctl",
+    "utilities/ovs-dpctl",
+    "utilities/ovs-vsctl",
+    "utilities/ovs-appctl",
+    "ovsdb/ovsdb-server",
+]
+
+def options(opt):
+    pass
+
+
+import os
+def configure(conf):
+    cur_path = conf.path.abspath()
+    dpdk_path = cur_path + "/../" + dpdk_ver
+    str =  "cd " + cur_path + "; ./boot.sh"
+    os.system( str)
+    str =  "cd " + cur_path + "; ./configure RTE_SDK="+ dpdk_path + "  --disable-ssl"
+    os.system( str)
+
+def distclean(bld):
+    del_cmd = "cd " + bld.path.abspath() + "; make distclean" 
+    os.system(del_cmd)
+
+def build(bld):
+    if bld.cmd == 'clean':
+        del_cmd = "cd " + bld.path.abspath() + "; make clean" 
+        os.system(del_cmd)
+        return
+
+    os.system("pwd")
+    str =  "cd " + bld.path.abspath() + "; make "
+    os.system(str)
+    os.mkdir

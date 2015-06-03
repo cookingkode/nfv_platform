@@ -1,0 +1,139 @@
+# -*- python -*-
+# WAF build script
+
+#
+# Sources that need to be built
+#
+import os
+
+dpdk_dir = "DPDK-1.6.0"
+dpdk_target = "x86_64-ivshmem-linuxapp-gcc"
+dpdk_includes = " -I" +dpdk_dir + "/" + dpdk_target + "/include"
+
+hub_includes = [ 
+    "/openvswitch/include" ,
+    "DPDK-1.6.0/x86_64-ivshmem-linuxapp-gcc/include",
+    "/openvswitch/lib"
+]
+# Shared libraries used by Versa Bride
+# Values : lib, path to lib, path for includes  
+shared_libs = {
+     "RT"               : [ "rt" , "/usr/lib", "/usr/include"],
+     "math"             : [ "m" , "/usr/lib", ""],
+     "redis"            : [ "hiredis" , "/usr/lib", "/usr/include"],
+}
+
+# Statis  libraries used by Versa Bride
+# Values : lib, path to lib, path for includes  
+static_libs = {
+     "ovs"               : ["openvswitch" , "openvswitch/lib", "openvswitch/lib"],
+}
+
+dpdk_libs = [
+    "librte_eal.a",
+    "librte_cmdline.a",
+    "librte_hash.a",
+    "librte_lpm.a",
+    "librte_mbuf.a",
+    "librte_mempool.a",
+    "librte_ring.a",
+    "librte_pmd_ring.a",
+    "librte_pmac.a",
+    "librte_malloc.a",
+    "librte_ivshmem.a",
+    "libethdev.a",
+    "librte_kni.a",
+    "librte_timer.a",
+    "librte_pmd_ixgbe.a",
+    "librte_pmd_e1000.a",
+    "librte_eal.a", # this needs to be there at first and last
+
+]
+#add include paths
+from waflib import Utils
+from waflib.TaskGen import feature, before_method, after, after_method
+@feature('c')
+@before_method('apply_incpaths')
+def add_current_dir_to_includes(self):
+        self.includes = Utils.to_list(self.includes)
+        parent_path = self.path.parent.abspath()
+        for path in hub_includes:
+            abs_path = parent_path + "/" + path
+            self.includes.append(abs_path)
+
+
+#includes = " -Iopenvswitch/include "
+includes = dpdk_includes
+
+def options(opt):
+	pass
+
+def distclean(opt):
+	pass
+
+@feature('c') 
+@after_method('apply_link') 
+def apply_add_precompiled(tgen): 
+    dpdk_object_dir = "../"+ dpdk_dir+ "/" + dpdk_target
+    try :
+        if tgen.compile_mode == 'c':
+            return #pass
+    except:
+        print "linking external objects"        
+
+    for k in dpdk_libs:
+        tgen.link_task.inputs.append(tgen.path.make_node(dpdk_object_dir + "/lib/" + k))
+
+
+def configure(conf):
+    all_shared_libs = ""
+    for k in shared_libs.keys():
+        lib_stuff = shared_libs[k]
+        path = repr(lib_stuff[1])
+        if path  == "'dpdk_path'":
+            path =  repr(str(conf.path.parent.abspath() + "/" + dpdk_dir + "/" + dpdk_target +  "/lib"))
+        exec("conf.env.LIB_%s = %s" % (k, repr(lib_stuff[0])))
+        exec("conf.env.LIBPATH_%s = %s" % (k, path ))
+        if not lib_stuff[2] == "":
+            exec("conf.env.INCLUDES_%s = %s" % (k, repr(lib_stuff[2])))
+        all_shared_libs += k + " "
+    conf.env.all_shared_libs = all_shared_libs
+    all_static_libs = [] 
+    all_static_libs_path = []
+    for k in static_libs.keys():
+        lib_stuff = static_libs[k]
+        path = repr(lib_stuff[1])
+        if path  == "'dpdk_path'":
+            path = str(conf.path.parent.abspath() + "/" + dpdk_dir + "/" + dpdk_target +  "/lib")
+        else:
+            path = str(conf.path.parent.abspath() + "/" + path.lstrip("'").rstrip("'"))
+        all_static_libs.append(lib_stuff[0])
+        all_static_libs_path.append(path)
+    conf.env.all_static_libs = all_static_libs
+    conf.env.all_static_libs_path = all_static_libs_path
+    print all_static_libs
+    print all_static_libs_path
+
+
+from waflib import Node
+def build(bld):
+    if bld.cmd == 'clean':
+        del_cmd = "rm -rf " + bld.path.abspath() + "/build" 
+        os.system(del_cmd)
+        return
+
+    dpdk_object_dir = bld.path.parent.abspath()+ "/" +dpdk_dir+ "/" + dpdk_target
+    dpdk_config_include = "-include " +  dpdk_object_dir + "/include/rte_config.h"
+    sources = bld.path.ant_glob('*.c')
+
+    bld.program(
+        features        =       'c',
+        source		=	sources,
+        target		=	'hub',
+        cflags		=	"-Werror " + dpdk_config_include,
+        ldflags         =       " " ,
+        use             =       bld.env.all_shared_libs + 'rte_eal',
+        stlib           =       bld.env.all_static_libs,
+        stlibpath       =       bld.env.all_static_libs_path,
+
+    )

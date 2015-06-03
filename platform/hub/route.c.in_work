@@ -1,0 +1,153 @@
+
+struct route_depth_table_entry {
+        rte_rwlock_t lock;                 /* rw lock*/
+        uint8_t vport;                      /* egress vport */
+        int8_t need_lookup;                      /* egress vport */
+        uint32_t ip_nh;                    /* next hop */
+        struct ether_addr l2_nh;           /* next hop L2  */
+};
+
+#define HASH_BUCKETS        4
+#define MAX_ROUTE_PER_DEPTH 50 
+#define NO_ROUTE_DEPTH      4 /* 32,26,16,8 to start off with */
+#define SOCKET0             0
+
+
+/* Parameters used for hash table */
+static struct rte_hash_parameters hash_table_params = {
+        .name               = "route table",
+        .entries            = MAX_ROUTE_PER_DEPTH,
+        .bucket_entries     = HASH_BUCKETS,
+        .key_len            = sizeof(uint32_t),
+        .hash_func          = rte_jhash,
+        .hash_func_init_val = 0,
+        .socket_id          = SOCKET0,
+};
+
+static uint8_t n_depths = 4;
+
+struct route_table_entry {
+        uint32_t no_entries; /* MAX 50 but kept word for future exapansion */
+        uint32_t depth_mask; /* Mask for IP address */
+        uint32_t or_mask;    /* negate and AND with the masked lookup;
+                                TODO move to a bloom filter */
+        struct rte_hash *hash_handle ; /* hash table */
+        struct route_depth_table_entry routes[MAX_ROUTE_PER_DEPTH] ;
+                             /* the actual routes */
+};
+
+static stuct route_table_entry rt_table[NO_ROUTE_DEPTH] __rte_cache_aligned;
+
+static uint8_t default_route_vport;
+static struct ether_addr default_route_l2;
+
+/* TEMP function till we get arp working */
+void
+arp_resolve(uint32_t gw, uint8_t vport, struct ether_addr *out)
+{
+        eth_random_addr(&out->addr_bytes[0]);
+         /* put the dest eth in promiscuos mode */
+}
+void
+vb_route_init()
+{
+        int d_itr, r_itr;
+
+        for (d_itr = 0; d_itr < NO_ROUTE_DEPTH; d_itr++) {
+                if((rt_table[d_itr].hash_handle =
+                        rte_hash_create(&hash_table_params))==NULL) {
+                        rte_exit(EXIT_FAILURE, "Failed to create route hash table\n");
+                 }       
+                 for (r_itr = 0; r_itr < MAX_ROUTE_PER_DEPTH; r_itr++) {
+                        rte_rwlock_init(&(rt_table[d_itr].routes[r_itr].lock));
+                 } 
+                 /* others should be 0 since global */
+        }
+        
+}
+
+int
+vb_route_add_default( uint8_t vport, uint32_t gw)
+{
+        default_route_vport = vport;
+        arp_resolve(gw,  rt_table[d_itr].routes[pos].vport, &default_route_l2);
+}
+
+static   int
+_vb_route_add(uint32_t prefix, uint8_t index, uint32_t next_hop, vport_out)
+{
+        
+        int pos = rte_hash_add_key(rt_table[index].hash_handle, prefix);
+        if (unlikely(pos <= 0) ) {
+                vb_log("vb route add error : %s ",
+                         pos==-ENOSPC?"no space" : " invalid param");
+                return pos;
+        }
+        rte_rwlock_write_lock(&(rt_table[iindex].routes[pos].lock));
+        rt_table[index].routes[pos].ip_nh = prefix;
+        rt_table[index].routes[pos].vport = vport_out; 
+        rt_table[index].routes[pos].need_lookup  = -1; /* lookup required */
+        bzero(&(rt_table[index].routes[pos].l2_nh), sizeof(struct ether_addr));
+        rte_rwlock_write_lock(&(rt_table[index].routes[pos].lock));
+        
+}
+
+
+int 
+vb_route_add(uint32_t prefix, unit8_t depth, uint32_t next_hop, uint8_t vport_out)
+{
+        switch(depth){
+        case 32:
+                _vb_route_add(prefix, 0, next_hop, vport_out);
+                break;
+        case 24:
+                _vb_route_add(prefix, 1, next_hop, vport_out);
+                break;
+        case 16:
+                _vb_route_add(prefix, 2, next_hop, vport_out);
+                break;
+        case 8:
+                _vb_route_add(prefix, 3, next_hop, vport_out);
+                break;
+        default:
+                vb_log(" Non stardard prefixes not supported!!");
+                return -1;
+        }
+
+        return 0;
+}
+
+#define IP_HDR_FROM_PKT(pkt) (struct ipv4_hdr*)\
+        (rte_pktmbuf_mtod(pkt, unsigned char *) + \
+                        sizeof(struct ether_hdr) )
+
+static void
+_vb_route_lookup( int depth, int pos, uint8_t * vport, struct ether_addr *l2)
+{
+
+        if(rt_table[d_itr].routes[pos].need_lookup == -1){
+                arp_resolve(rt_table[d_itr].routes[pos].ip_nh,
+                            rt_table[d_itr].routes[pos].vport,
+                            &rt_table[d_itr].routes[pos].l2_nh);
+        }
+        *vport =  rt_table[d_itr].routes[pos].vport;
+        ether_addr_copy( &rt_table[d_itr].routes[pos].l2_nh, l2);     
+}
+
+void
+vb_route_lookup( struct rte_mbuf * m, uint8_t* vport,  struct ether_addr *dest_addr)
+{
+        int d_itr, pos;
+
+        for(d_itr =0 ; d_itr < NO_ROUTE_DEPTH; d_itr++){
+                pos = rte_hash_lookup(rt_table[d_itr].hash_handle, 
+                    (IP_HDR_FROM_PKT(m)->dst_addr & rt_table[d_itr].depth_mask));
+                if(pos>0) {
+                        return _vb_route_fillup(d_itr, pos, vport, dest_addr);
+                 }
+        }
+        
+        *vport = default_route_vport;
+        ether_addr_copy( &default_route_l2, dest_addr); /* TODO validate ARP cache */
+
+}

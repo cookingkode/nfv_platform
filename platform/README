@@ -1,0 +1,68 @@
+#
+# How to run compile and run the hub
+####################################
+
+Compile
+#######
+In the platform directory :
+./waf configure
+./waf
+
+Running
+######
+
+- [First time only] Create the Database
+sudo ovsdb/ovsdb-tool create /usr/local/etc/openvswitch/conf.db vswitchd/vswitch.ovsschema
+    Configuration is stored here - /usr/local/etc/openvswitch/conf.db
+
+- Start ovsdb-server
+sudo ./ovsdb/ovsdb-server --remote=punix:/usr/local/var/run/openvswitch/db.sock --remote=db:Open_vSwitch,Open_vSwitch,manager_options &
+
+- [First time only] Create Bridge
+sudo ./utilities/ovs-vsctl --no-wait add-br br1 -- set Bridge br1 datapath_type=dpdk
+
+-[First time only] Add ports
+sudo ./utilities/ovs-vsctl --no-wait add-port br1 ovs_dpdk_16 -- set Interface ovs_dpdk_16 type=dpdk
+sudo ./utilities/ovs-vsctl --no-wait add-port br1 ovs_dpdk_17 -- set Interface ovs_dpdk_17 type=dpdk
+here 16/17 refer to physical ports 1-16 are ivshmem and 128 onwards are tap port
+
+- Check for sanity
+sudo ./utilities/ovs-vsctl show
+
+- Ensure DPDK environment is setup properly
+    a. Enable hugepage usage within kernel boot options. Multiple 1 GB and 2 MB hugepage sizes are supported; however, 1G pages are recommended
+    e.g default_hugepagesz=1G hugepagesz=1G hugepages=1
+    b. mount hugetlbfs
+    mount –t hugetlbfs nodev /dev/hugepages
+    c. install DPDK drivers  
+    modprobe uio
+    insmod build/kmod/igb_uio.ko
+    d. Build ports to drive using <DPDK_DIR>/tools/pci_unbind.py script
+    e.g. 
+    pci_unbind.py -b igb_uio eth1
+    pci_unbind.py --status 
+
+- Run hub
+From the platform directory
+./build/hub/hub -c 0xF -n 4 -- -k 2 -p 0x3 -n 3 -t 1 --stats=0 --vswitchd=0 --client_switching_core=1 --config="(0,0,1),(1,0,2)"
+See DPDK docs for params reference
+
+- Run OVS
+From the platform directory
+./openvswitch/vswitchd/ovs-vswitchd -c 0x100 --proc-type=secondary
+
+- Create flows
+e.g
+From the platform/openvswitch/utilities directory
+./ovs-ofctl del-flows br1
+./ovs-ofctl add-flow br1 cookie=1,in_port=17,idle_timeout=0,action=output:128
+./ovs-ofctl add-flow br1  cookie=2,in_port=128,idle_timeout=0,action=output:17
+./ovs-ofctl dump-flows br1
+
+to inspect the datapath flows
+./ovs-dpctl -c 1 --proc-type=secondary -- -s dump-flows dpdk@dp
+
+
+
+
+

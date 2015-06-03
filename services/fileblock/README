@@ -1,0 +1,14 @@
+#
+# how to run file matching prototype
+####################################
+
+On the server machine
+python octo.py server match.py
+
+One the client machines
+python octo.py client <server ip address >
+
+
+The answer will be printed on the server 
+
+for more info on octo.py : https://code.google.com/p/octopy/

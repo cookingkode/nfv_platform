@@ -1,0 +1,286 @@
+# -*- python -*-
+# Main WAF build script
+
+# Make sure to fetch extra modules before enabling them 
+#./waf update --files=parallel_debug
+
+import sys
+import platform
+from waflib import Logs
+from waflib.Utils import to_list
+
+spack_api_version = 1
+parallel_debug = False
+if '--pdebug' in sys.argv:
+    Logs.warn("Enabling parallel debug options")
+    parallel_debug = True
+
+#
+# The top level directory and the directory where all object files would go
+#
+top = '.' 
+out = 'build' 
+
+#
+# BUILD TARGETS
+#
+bld_targets = ['DPDK-1.6.0','openvswitch','hub']
+#bld_targets = ['openvswitch','hub']
+
+cpu_models = {
+    "atom" : [['-march=atom'], 'SSE SSE2 SSE3 SSSE3'.split()],
+    "core2": [['-march=core2'], 'SSE SSE2 SSE3'.split()],
+    "snb"  : [['-march=corei7-avx'], "SSE SSE2 SSE3 SSSE3 SSE4_1 SSE4_2 AES PCLMULQDQ AVX".split() ],
+    "ivb"  : [['-march=core-avx-i'], 
+              "SSE SSE2 SSE3 SSSE3 SSE4_1 SSE4_2 AES PCLMULQDQ AVX RDRAND FSGSBASE F16C".split() ],
+    "wsm"  : [['-march=corei7', '-maes', '-mpclmul'],
+              "SSE SSE2 SSE3 SSSE3 SSE4_1 SSE4_2 AES PCLMULQDQ".split() ],
+    "nhm"  : [['-march=corei7'],
+              "SSE SSE2 SSE3 SSSE3 SSE4_1 SSE4_2".split() ],
+    "native" : [['-march=native'],[]]
+}
+
+cpu_arch = {
+    "i686" : {"LINKFLAGS":"-m32",
+              "CFLAGS":"-m32"},
+    "x86_64": {"LINKFLAGS":"-m64",
+               "CFLAGS":"-m64"},
+    "native": {}
+    }
+
+compilers = {
+    "gcc" : {
+        "CC":"gcc",
+        "CXX":"g++",
+        "AS":"gcc",
+        },
+    "clang": {
+        "CC":"clang",
+        "CXX":"clang++",
+        "AS":"clang",
+        }
+}
+
+pktio = {
+    "default" : '-DVS_PKTIO_DEFAULT',
+    "pcap" : '-DVS_PKTIO_PCAP',
+}
+
+"""
+def options(opt):
+    for target in bld_targets:
+        opt.recurse(target)
+
+"""
+def options(opt):
+    opt.load('compiler_c compiler_cxx')
+    opt.load('boost buildutils', tooldir='waftools')
+
+    # try loading parallel debug, if required
+    if parallel_debug :
+        try:
+            opt.load('parallel_debug')
+        except:
+            Logs.error("Parallel debug module is absent. Run 'waf update --files=parallel_debug'")
+
+    opt.add_option('--debug', action='store_true', default=True, help='Enable debugging')
+    opt.add_option('--vtune', action='store_true', default=False, help='Enable vtune instrumentation.')
+    opt.add_option('--no-debug', action='store_false', dest="debug", help='Disable debugging')
+    opt.add_option('--optflags', action='store', 
+                   default="-O2", help='Set optimization flags [%default]')
+    opt.add_option('--cpu', action='store', type='choice', choices=cpu_models.keys(),
+                   default="snb", help='Set CPU model[%default] : ' + "/".join(cpu_models.keys()))
+    opt.add_option('--arch', action='store', type='choice', choices=cpu_arch.keys(),
+                   default="native", help='Set CPU arch[%default] : ' + "/".join(cpu_arch.keys()))
+    opt.add_option('--pdebug', action='store_true', default=False, help='Enable parallel debugging')
+    opt.add_option('--compiler', action='store', type='choice', choices=compilers.keys(),
+                   default="gcc", 
+                   help='Specify compiler to use[%default] : ' + "/".join(compilers.keys()))
+    opt.add_option('--pktio', action='store', type='choice', choices=pktio.keys(),
+                   default="default", help='Set PKTIO[%default] : ' + "/".join(pktio.keys()))
+
+    opt.add_option("--valgrind", action='store_true', default=False,
+                  dest="valgrind",
+                  help="Enable support for Valgrind")
+
+    opt.add_option('--sp_api_version', action='store', default=str(spack_api_version), help='Set Security Package API Version')
+
+    for target in bld_targets:
+        opt.recurse(target)
+
+def configure(conf): 
+    # override compiler
+    conf.env.compiler=conf.options.compiler
+
+    if conf.environ.has_key('CCC_ANALYZER_ANALYSIS'):
+        conf.msg('Static Analysis build','-Werror disabled');
+        conf.env.STATIC_ANALYSIS=1
+    else:
+        conf.env.STATIC_ANALYSIS=0
+
+    if not conf.environ.has_key('CC'):
+        conf.env.CC=compilers[conf.env.compiler]["CC"]
+
+    if not conf.environ.has_key('CXX'):
+        conf.env.CXX=compilers[conf.env.compiler]["CXX"]
+
+    if conf.environ.has_key('NCS_DIR'):
+        conf.env.NCS=1
+
+    if conf.options.debug:
+        conf.env.DEBUG=True
+        conf.env.append_unique('CFLAGS','-g')
+        conf.env.append_unique('CXXFLAGS','-g')
+        conf.env.append_unique('LINKFLAGS','-g')
+
+    if conf.options.arch == "native":
+        conf.env.MACHINE = platform.machine()
+    else:
+        conf.env.MACHINE = conf.options.arch
+
+    conf.msg('TARGET CPU', "Using CPU=%s/%s" %(conf.env.MACHINE,conf.options.cpu));
+    (cpu_cflags,cpu_flags) = cpu_models[conf.options.cpu]
+    conf.msg('TARGET CPU CFLAGS', cpu_cflags);
+    conf.msg('TARGET CPU FLAGS', cpu_flags);
+
+    conf.env.append_unique('TARGET_CFLAGS', cpu_cflags)
+    conf.env.append_value('CFLAGS', to_list(conf.options.optflags))
+    conf.env.append_unique('CPUFLAGS', cpu_flags)
+
+    conf.env.append_unique('CFLAGS', ['-std=gnu99','-Wall'])
+    conf.env.append_unique('CXXFLAGS', ['-Wall'])
+
+    # Add arch-specific options
+    cpu_arch_opts = cpu_arch[conf.env.MACHINE]
+    for opt in cpu_arch_opts.keys():
+        value = cpu_arch_opts[opt]
+        conf.msg('ARCH FLAGS', '%s += %s' % (opt,value));
+        conf.env.append_unique(opt, value);
+
+    conf.load('compiler_c compiler_cxx gas') 
+    conf.load('gccdeps boost buildutils xsl confdc', tooldir='waftools')
+
+    conf.check_cc(lib='m', mandatory=True,
+            errmsg = "Please do a apt-get install libm-dev")
+    conf.check_cc(lib='dl', mandatory=True,
+            errmsg = "Please do a apt-get install libdl-dev")
+    conf.check_cc(lib='rt', mandatory=True,
+            errmsg = "Please do a apt-get install librt-dev")
+    conf.check_cc(lib='event', mandatory=True,
+            errmsg = "Please do a apt-get install libevent-dev")
+    conf.check_cc(lib='pthread', mandatory=True, uselib_store='PTHREAD')
+    conf.check_cc(lib='crypt', mandatory=True, uselib_store='CRYPT')
+    conf.check_cfg(package='libnl-3.0', mandatory=True, uselib_store='NL-3',
+                   args=['--cflags', '--libs'],
+                   errmsg = "Please do a apt-get install libnl-3-dev")
+    conf.check_cfg(package='libnl-route-3.0', mandatory=True, uselib_store='NL-ROUTE-3',
+                  args=['--cflags', '--libs'],
+                  errmsg = "Please do a apt-get install libnl-route-3-dev")
+    conf.check_cc(fragment = "#include <boost/version.hpp>\nint main(void) { return (BOOST_VERSION >= 104800 ? 0 : 1); }\n",
+                   execute = "1",
+                   mandatory = True,
+                   msg = 'Checking for boost library >= 1.48',
+                   errmsg = 'too old\nPlease install boost version 1.48 or higher using sudo apt-get install libboost-iostreams1.48')
+    conf.check_cc(lib='pcap', mandatory=True,
+                  errmsg = "Please do 'sudo apt-get install libpcap-dev'")
+    conf.check_cc(lib='urcu', mandatory=True,
+                  errmsg = "Please do 'sudo apt-get install liburcu-dev'")
+
+    conf.find_program('awk', var='AWK') 
+    conf.find_program('nm', var='NM') 
+    conf.find_program('xsltproc', var='XSLTPROC') 
+    conf.find_program('objcopy', var='OBJCOPY') 
+    conf.find_program('yasm', var='YAS', madatory=True, errmsg="Please do 'sudo apt-get install yasm'") 
+    conf.env.pktio = conf.options.pktio
+    conf.msg('Pktio', "Using Pktio=%s" %(conf.options.pktio));
+
+    conf.check_boost()
+
+    if conf.options.valgrind:
+        conf.check_cc(header_name="valgrind/valgrind.h", mandatory=True,
+                      var="VALGRIND",
+                      fragment = """
+#include <valgrind/valgrind.h>
+#include <valgrind/memcheck.h>
+
+#if !defined(VALGRIND_RESIZEINPLACE_BLOCK)
+#  error "Incompatible Valgrind version"
+#endif
+int main(void) {return 0;}
+""");
+        conf.env.VALGRIND = True
+
+    # security package api version
+    conf.env.sp_api_version = conf.options.sp_api_version
+    conf.msg('sp_api_version', "Using sp_api_version=%s" %(conf.env.sp_api_version));
+
+    if conf.options.vtune:
+        vtune_location = '/opt/intel/vtune_amplifier_xe'
+        vtune_linkflags = '-L%s/lib64' % vtune_location
+        conf.check_cc(stlib='ittnotify', 
+                      uselib_store = 'vtune',
+                      linkflags = vtune_linkflags,
+                      export_linkflags = vtune_linkflags,
+                      mandatory=False, errmsg = "VTune installation not found.")
+
+    if conf.env.STLIB_vtune:
+        conf.env.VTUNE=True
+    else:
+        conf.env.VTUNE=False
+
+    for target in bld_targets:
+        conf.recurse(target)
+
+
+def build(bld):
+
+    if not bld.env.VTUNE:
+        # Define macro to disable vtune instrumentation.
+        bld(target='vtune', export_defines='INTEL_NO_ITTNOTIFY_API')
+
+    if parallel_debug and ('parallel_debug' in bld.tools):
+        bld.load('parallel_debug')
+
+    bld.add_group('stage0')
+    bld.add_group('early0')
+    bld.add_group('early1')
+    bld.add_group('early2')
+    bld.add_group('main') # Main build group
+    bld.group_stack = []
+
+    # Create environment for the host build
+    hostenv = bld.env.derive()
+    hostenv.detach()
+
+    hostenv.MACHINE = platform.machine()
+    bld.env.hostenv = hostenv
+
+    # Append target-specific flags to default build environment
+    bld.env.append_unique('CFLAGS', bld.env.TARGET_CFLAGS)
+    bld.env.append_unique('CFLAGS', pktio[bld.env.pktio])
+    bld.env.append_unique('CFLAGS',
+                          '-DVS_SPACK_API_VERSION=' + bld.env.sp_api_version)
+
+    bld.phase('main')
+
+    # export netslice includes
+    bld( export_includes = 'kernel/modules/netslice',
+         name            = 'netslice')
+
+    for target in bld_targets:
+        bld.recurse(target)
+
+import os
+def distclean(bld):
+    str = "rm -rf build"
+    os.system(str)
+    for target in bld_targets:
+        bld.recurse(target)
+
+def spack_download(bld):
+        bld.recurse('usr/lib/libdpi')
+
+def autogen(bld):
+        bld.recurse('usr/lib/libdpi')
+
+
